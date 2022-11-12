@@ -1,4 +1,4 @@
-﻿using Azure.Communication.CallAutomation;
+﻿using Azure.Communication.CallingServer;
 using Microsoft.AspNetCore.Mvc;
 using Azure.Messaging.EventGrid;
 using Azure.Messaging.EventGrid.SystemEvents;
@@ -17,8 +17,9 @@ namespace QuickStartApi.Controllers
     public class CallRecordingController : Controller
     {
         private readonly string blobStorageConnectionString;
+        private readonly string callbackUri;
         private readonly string containerName;
-        private readonly CallAutomationClient callAutomationClient;
+        private readonly CallingServerClient callingServerClient;
         private const string CallRecodingActiveErrorCode = "8553";
         private const string CallRecodingActiveError = "Recording is already in progress, one recording can be active at one time.";
         public ILogger<CallRecordingController> Logger { get; }
@@ -28,8 +29,9 @@ namespace QuickStartApi.Controllers
         public CallRecordingController(IConfiguration configuration, ILogger<CallRecordingController> logger)
         {
             blobStorageConnectionString = configuration["BlobStorageConnectionString"];
+            callbackUri = configuration["CallbackUri"];
             containerName = configuration["BlobContainerName"];
-            callAutomationClient = new CallAutomationClient(configuration["ACSResourceConnectionString"]);
+            callingServerClient = new CallingServerClient(configuration["ACSResourceConnectionString"]);
             Logger = logger;
         }
 
@@ -45,12 +47,11 @@ namespace QuickStartApi.Controllers
             {
                 if (!string.IsNullOrEmpty(serverCallId))
                 {
+                    var uri = new Uri(callbackUri);
                     //Passing RecordingContent initiates recording in specific format. audio/audiovideo
                     //RecordingChannel is used to pass the channel type. mixed/unmixed
                     //RecordingFormat is used to pass the format of the recording. mp4/mp3/wav
-                    StartRecordingOptions recordingOptions = new StartRecordingOptions(new ServerCallLocator(serverCallId));
-                    var startRecordingResponse = await callAutomationClient.GetCallRecording()
-                        .StartRecordingAsync(recordingOptions).ConfigureAwait(false);
+                    var startRecordingResponse = await callingServerClient.InitializeServerCall(serverCallId).StartRecordingAsync(uri).ConfigureAwait(false);
 
                     Logger.LogInformation($"StartRecordingAsync response -- >  {startRecordingResponse.GetRawResponse()}, Recording Id: {startRecordingResponse.Value.RecordingId}");
 
@@ -103,13 +104,14 @@ namespace QuickStartApi.Controllers
                     //Passing RecordingContent initiates recording in specific format. audio/audiovideo
                     //RecordingChannel is used to pass the channel type. mixed/unmixed
                     //RecordingFormat is used to pass the format of the recording. mp4/mp3/wav
-                    StartRecordingOptions recordingOptions = new StartRecordingOptions(new ServerCallLocator(serverCallId));
-                    recordingOptions.RecordingChannel = Mapper.RecordingChannelMap.TryGetValue(recordingChannel, out recChannelVal) ? recChannelVal : RecordingChannel.Mixed;
-                    recordingOptions.RecordingContent = Mapper.RecordingContentMap.TryGetValue(recordingContent, out recContentVal) ? recContentVal : RecordingContent.AudioVideo;
-                    recordingOptions.RecordingFormat = Mapper.RecordingFormatMap.TryGetValue(recordingFormat, out recFormatVal) ? recFormatVal : RecordingFormat.Mp4;
-                  
-                    var startRecordingResponse = await callAutomationClient.GetCallRecording()
-                        .StartRecordingAsync(recordingOptions).ConfigureAwait(false);
+                    var startRecordingResponse = await callingServerClient
+                        .InitializeServerCall(serverCallId)
+                        .StartRecordingAsync(
+                            new Uri(callbackUri),
+                            Mapper.RecordingContentMap.TryGetValue(recordingContent, out recContentVal) ? recContentVal : RecordingContent.AudioVideo,
+                            Mapper.RecordingChannelMap.TryGetValue(recordingChannel, out recChannelVal) ? recChannelVal : RecordingChannel.Mixed,
+                            Mapper.RecordingFormatMap.TryGetValue(recordingFormat, out recFormatVal) ? recFormatVal : RecordingFormat.Mp4
+                        ).ConfigureAwait(false);
 
                     Logger.LogInformation($"StartRecordingAudioAsync response -- >  {startRecordingResponse.GetRawResponse()}, Recording Id: {startRecordingResponse.Value.RecordingId}");
 
@@ -161,7 +163,7 @@ namespace QuickStartApi.Controllers
                             recordingData[serverCallId] = recordingId;
                         }
                     }
-                    var pauseRecording = await callAutomationClient.GetCallRecording().PauseRecordingAsync(recordingId);
+                    var pauseRecording = await callingServerClient.InitializeServerCall(serverCallId).PauseRecordingAsync(recordingId);
                     Logger.LogInformation($"PauseRecordingAsync response -- > {pauseRecording}");
 
                     return Ok();
@@ -201,7 +203,7 @@ namespace QuickStartApi.Controllers
                             recordingData[serverCallId] = recordingId;
                         }
                     }
-                    var resumeRecording = await callAutomationClient.GetCallRecording().ResumeRecordingAsync(recordingId);
+                    var resumeRecording = await callingServerClient.InitializeServerCall(serverCallId).ResumeRecordingAsync(recordingId);
                     Logger.LogInformation($"ResumeRecordingAsync response -- > {resumeRecording}");
 
                     return Ok();
@@ -243,7 +245,7 @@ namespace QuickStartApi.Controllers
                         }
                     }
 
-                    var stopRecording = await callAutomationClient.GetCallRecording().StopRecordingAsync(recordingId).ConfigureAwait(false);
+                    var stopRecording = await callingServerClient.InitializeServerCall(serverCallId).StopRecordingAsync(recordingId).ConfigureAwait(false);
                     Logger.LogInformation($"StopRecordingAsync response -- > {stopRecording}");
 
                     if (recordingData.ContainsKey(serverCallId))
@@ -294,7 +296,7 @@ namespace QuickStartApi.Controllers
                         }
                     }
 
-                    var recordingState = await callAutomationClient.GetCallRecording().GetRecordingStateAsync(recordingId).ConfigureAwait(false);
+                    var recordingState = await callingServerClient.InitializeServerCall(serverCallId).GetRecordingStateAsync(recordingId).ConfigureAwait(false);
 
                     Logger.LogInformation($"GetRecordingStateAsync response -- > {recordingState}");
 
@@ -376,13 +378,13 @@ namespace QuickStartApi.Controllers
         private async Task<bool> ProcessFile(string downloadLocation, string documentId, string fileFormat, string downloadType)
         {
             var recordingDownloadUri = new Uri(downloadLocation);
-            var response = await callAutomationClient.GetCallRecording().DownloadStreamingAsync(recordingDownloadUri);
+            var response = callingServerClient.DownloadStreamingAsync(recordingDownloadUri);
 
-            Logger.LogInformation($"Download {downloadType} response  -- >" + response.GetRawResponse());
+            Logger.LogInformation($"Download {downloadType} response  -- >" + response.Result.GetRawResponse());
             Logger.LogInformation($"Save downloaded {downloadType} -- >");
 
             string filePath = ".\\" + documentId + "." + fileFormat;
-            using (Stream streamToReadFrom = response.Value)
+            using (Stream streamToReadFrom = response.Result.Value)
             {
                 using (Stream streamToWriteTo = System.IO.File.Open(filePath, FileMode.Create))
                 {
